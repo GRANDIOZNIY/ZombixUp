@@ -1452,6 +1452,8 @@ function minesReset(){MINES_VIEW.game=null;MINES_VIEW.status='';MINES_VIEW.tone=
 
 /* ---------- ZOMBIX CRASH ---------- */
 let CRASH_VIEW={game:null,busy:false,message:'',history:[],historyKeys:[],config:{enabled:true,minBet:10,growthRate:0.00006},visualMultiplier:null,finishFrame:null,serverOffset:0,canvasWidth:0,canvasHeight:0}, CRASH_STATE_LOADED_FOR=null, CRASH_OWNER_ID=null, CRASH_TIMER=null, CRASH_ANIMATION_FRAME=null, CRASH_RESIZE_OBSERVER=null, CRASH_RESIZE_HANDLER=null;
+let CRASH_RTT_MEASURE_BUSY=false,CRASH_RTT_LAST_MEASURE=0;
+async function crashMeasureRtt(){if(CRASH_RTT_MEASURE_BUSY||Date.now()-CRASH_RTT_LAST_MEASURE<5000)return;CRASH_RTT_MEASURE_BUSY=true;CRASH_RTT_LAST_MEASURE=Date.now();try{const start=await workerRequest('/api/crash/rtt/start',{});if(start?.nonce)await workerRequest('/api/crash/rtt/end',{nonce:start.nonce});}catch(_){}finally{CRASH_RTT_MEASURE_BUSY=false;}}
 function crashSafeRate(game){const n=Number(game?.growthRate||CRASH_VIEW.config?.growthRate||0.00006);return Number.isFinite(n)&&n>=0.000001&&n<=0.01?n:0.00006;}
 function crashIsV2(game){return Number(game?.multiplierVersion||2)>=2;}
 function crashDisplayMultiplier(game){const raw=CRASH_VIEW.visualMultiplier!==null?CRASH_VIEW.visualMultiplier:crashMultiplierNow(game);return game?.status==='active'?Math.floor(Math.max(0,raw)*100)/100:raw;}
@@ -1639,7 +1641,7 @@ async function crashAction(){
 
   CRASH_VIEW.busy=true;CRASH_VIEW.message='';crashPaint();
   try{
-    const requestStarted=Date.now(),r=active?await workerRequest('/api/crash/cashout',{displayMultiplier:shownBefore}):await workerRequest('/api/crash/start',{bet});
+    const requestStarted=Date.now(),r=active?await workerRequest('/api/crash/cashout',{}):await workerRequest('/api/crash/start',{bet});
     crashSyncServerTime(r,requestStarted);const previous=CRASH_VIEW.game;
     CRASH_VIEW.game=r.game||null;CRASH_VIEW.message=CRASH_VIEW.game?.status==='lost'?(r.message||'Ракета разбилась'):'';CRASH_VIEW.visualMultiplier=null;
     if(CRASH_VIEW.game?.status==='cashed_out'){
@@ -1692,11 +1694,11 @@ function renderCrash(host){
   const stage=document.getElementById('crash-stage');
   if(stage&&typeof ResizeObserver!=='undefined'){CRASH_RESIZE_OBSERVER=new ResizeObserver(()=>crashResizeCanvas());CRASH_RESIZE_OBSERVER.observe(stage);}
   else{CRASH_RESIZE_HANDLER=crashResizeCanvas;window.addEventListener('resize',CRASH_RESIZE_HANDLER,{passive:true});}
-  crashResizeCanvas();crashPaint();
+  crashResizeCanvas();crashPaint();crashMeasureRtt();
   if(CRASH_TIMER)clearInterval(CRASH_TIMER);
   if(CRASH_ANIMATION_FRAME){cancelAnimationFrame(CRASH_ANIMATION_FRAME);CRASH_ANIMATION_FRAME=null;}
   crashStartAnimation();
-  CRASH_TIMER=setInterval(()=>{if(CURRENT_TAB!=='crash'){clearInterval(CRASH_TIMER);CRASH_TIMER=null;if(CRASH_ANIMATION_FRAME){cancelAnimationFrame(CRASH_ANIMATION_FRAME);CRASH_ANIMATION_FRAME=null;}if(CRASH_RESIZE_OBSERVER){CRASH_RESIZE_OBSERVER.disconnect();CRASH_RESIZE_OBSERVER=null;}if(CRASH_RESIZE_HANDLER){window.removeEventListener('resize',CRASH_RESIZE_HANDLER);CRASH_RESIZE_HANDLER=null;}return;}if(CRASH_VIEW.game?.status==='active')crashRefresh();},1000);
+  CRASH_TIMER=setInterval(()=>{if(CURRENT_TAB!=='crash'){clearInterval(CRASH_TIMER);CRASH_TIMER=null;if(CRASH_ANIMATION_FRAME){cancelAnimationFrame(CRASH_ANIMATION_FRAME);CRASH_ANIMATION_FRAME=null;}if(CRASH_RESIZE_OBSERVER){CRASH_RESIZE_OBSERVER.disconnect();CRASH_RESIZE_OBSERVER=null;}if(CRASH_RESIZE_HANDLER){window.removeEventListener('resize',CRASH_RESIZE_HANDLER);CRASH_RESIZE_HANDLER=null;}return;}if(CRASH_VIEW.game?.status==='active'){crashRefresh();crashMeasureRtt();}},1000);
 }
 
 
