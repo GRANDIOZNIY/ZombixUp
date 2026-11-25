@@ -566,6 +566,12 @@
   <p class="sub" id="auth-subtitle">Вход через Telegram</p>
   <div class="card">
     <p class="muted" id="a-msg" style="margin:6px 0 12px; min-height:18px">Открой приложение через Telegram — вход и создание профиля выполняются автоматически.</p>
+    <div id="firebase-session-recovery" style="display:none;margin:12px 0 4px;padding:13px;border:1px solid rgba(255,170,70,.35);border-radius:13px;background:rgba(255,170,70,.07)">
+      <div style="font-weight:700;margin-bottom:6px">Проблема с Firebase-сессией</div>
+      <div class="muted" style="font-size:12px;line-height:1.5;margin-bottom:10px">Текущая анонимная сессия уже привязана к другому аккаунту. Можно создать новую сессию и повторить вход. Игровой профиль, баланс и старые привязки не удаляются.</div>
+      <button class="btn" id="firebase-session-recovery-btn" type="button" onclick="recoverFirebaseSession()" style="width:100%">Обновить Firebase-сессию</button>
+      <div id="firebase-session-recovery-status" class="muted" style="font-size:12px;margin-top:8px"></div>
+    </div>
     <div id="test-auth-fields" style="display:none">
       <label for="test-login-password" class="muted" style="display:block;margin:10px 0 6px">Пароль тестового доступа</label>
       <input id="test-login-password" type="password" autocomplete="current-password" placeholder="Введите пароль" style="width:100%;box-sizing:border-box;margin-bottom:10px">
@@ -951,6 +957,77 @@ function handleBlockedLogin(data) {
   return true;
 }
 
+
+let SESSION_RECOVERY_BUSY = false;
+
+function showFirebaseSessionRecovery(error) {
+  const code = String(error?.code || '');
+  const message = String(error?.message || error || '');
+  const isSessionConflict =
+    code === 'FIREBASE_UID_ALREADY_BOUND' ||
+    code === 'TEST_UID_ALREADY_BOUND' ||
+    /firebase[- ]сессия.*(привязан|связан)|сессия.*другому аккаунту|привязана к другому (аккаунту|id)/i.test(message);
+
+  if (!isSessionConflict) return false;
+
+  showAuth();
+  const panel = document.getElementById('firebase-session-recovery');
+  const button = document.getElementById('firebase-session-recovery-btn');
+  const status = document.getElementById('firebase-session-recovery-status');
+  if (panel) panel.style.display = 'block';
+  if (button) {
+    button.disabled = false;
+    button.textContent = 'Обновить Firebase-сессию';
+  }
+  if (status) status.textContent = '';
+  aMsg('Обнаружен конфликт Firebase-сессии. Нажмите кнопку ниже, чтобы создать новую сессию и повторить вход.', 'err');
+  return true;
+}
+
+async function recoverFirebaseSession() {
+  if (SESSION_RECOVERY_BUSY) return;
+  if (!TG_USER || !TG_INIT_DATA) {
+    aMsg('Обновление сессии доступно при открытии приложения через Telegram.', 'err');
+    return;
+  }
+
+  SESSION_RECOVERY_BUSY = true;
+  autoTelegramStarted = true;
+  const button = document.getElementById('firebase-session-recovery-btn');
+  const status = document.getElementById('firebase-session-recovery-status');
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Обновляем…';
+  }
+  if (status) status.textContent = 'Создаём новую анонимную Firebase-сессию…';
+
+  try {
+    // Меняется только локальная анонимная Firebase-сессия.
+    // Старые uids и users в Realtime Database не удаляются и не перепривязываются.
+    await auth.signOut();
+    const credential = await auth.signInAnonymously();
+
+    if (status) status.textContent = 'Новая сессия создана. Повторно проверяем Telegram…';
+    await telegramAutoLogin(credential.user);
+
+    const panel = document.getElementById('firebase-session-recovery');
+    if (panel) panel.style.display = 'none';
+  } catch (error) {
+    if (!showFirebaseSessionRecovery(error)) {
+      aMsg('Не удалось обновить Firebase-сессию: ' + (error?.message || 'Неизвестная ошибка'), 'err');
+      if (status) status.textContent = 'Повторите попытку позже. Данные и старые привязки не изменялись.';
+    }
+  } finally {
+    SESSION_RECOVERY_BUSY = false;
+    const currentButton = document.getElementById('firebase-session-recovery-btn');
+    if (currentButton) {
+      currentButton.disabled = false;
+      currentButton.textContent = 'Повторить обновление сессии';
+    }
+  }
+}
+
 async function telegramAutoLogin(firebaseUser) {
   if (!TG_USER || !TG_INIT_DATA) throw new Error('Telegram не передал данные авторизации. Откройте Mini App кнопкой бота.');
   if (WORKER_URL.includes('YOUR-WORKER')) throw new Error('Не настроен URL Cloudflare Worker.');
@@ -963,7 +1040,12 @@ async function telegramAutoLogin(firebaseUser) {
     body:JSON.stringify({ initData:TG_INIT_DATA, uid:firebaseUser.uid, idToken })
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) { if (handleBlockedLogin(data)) return; throw new Error(formatApiError(data, response.status, 'Не удалось выполнить вход через Telegram')); }
+  if (!response.ok || !data.ok) {
+    if (handleBlockedLogin(data)) return;
+    const error = new Error(formatApiError(data, response.status, 'Не удалось выполнить вход через Telegram'));
+    error.code = String(data?.code || '');
+    throw error;
+  }
   CURRENT_ID = String(data.id || TG_USER.id);
   CURRENT_PASS = '';
   await enterApp(CURRENT_ID);
@@ -1320,7 +1402,11 @@ auth.onAuthStateChanged(u => {
     if (autoTelegramStarted) return;
     if (!u) { auth.signInAnonymously().catch(e => { showAuth(); aMsg('Ошибка Firebase: ' + e.message, 'err'); }); return; }
     autoTelegramStarted = true;
-    telegramAutoLogin(u).catch(e => { showAuth(); aMsg('Не удалось войти автоматически: ' + (e?.message || 'Неизвестная ошибка') + (e instanceof TypeError ? ' [код: NETWORK_OR_CORS_ERROR]' : ''), 'err'); });
+    telegramAutoLogin(u).catch(e => {
+      if (showFirebaseSessionRecovery(e)) return;
+      showAuth();
+      aMsg('Не удалось войти автоматически: ' + (e?.message || 'Неизвестная ошибка') + (e instanceof TypeError ? ' [код: NETWORK_OR_CORS_ERROR]' : ''), 'err');
+    });
     return;
   }
   showAuth();
